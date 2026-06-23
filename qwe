@@ -14,75 +14,79 @@ LLAMA_SWAP_CONFIG="${HOME}/.config/llama-swap/config.yaml"
 # Default config values (overridden by ~/.config/qwe/config)
 MODEL_TIER="smart"
 ENDPOINT="http://localhost:8080"
+LIGHT_MODELNAME="google/gemma-4-E4B-it-qat-q4_0-gguf"
+BALANCED_MODELNAME="google/gemma-4-12B-it-qat-q4_0-gguf"
+BALANCEDPLUS_MODELNAME="unsloth/gemma-4-12b-it-GGUF:UD-Q8_K_XL"
+SMART_MODELNAME="unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q6_K_XL"
 
 # --- Model tier lookup helpers (bash 3.2 compatible) -------------------------
 tier_profile() {
-    case "$1" in
-        light)      echo "qwe-light" ;;
-        balanced)   echo "qwe-balanced" ;;
-        balanced+)  echo "qwe-balanced-plus" ;;
-        smart)      echo "qwe-smart" ;;
-        *)          echo "" ;;
-    esac
+  case "$1" in
+  light) echo "qwe-light" ;;
+  balanced) echo "qwe-balanced" ;;
+  balanced+) echo "qwe-balanced-plus" ;;
+  smart) echo "qwe-smart" ;;
+  *) echo "" ;;
+  esac
 }
 
 tier_ram() {
-    case "$1" in
-        light)      echo "~3 GB" ;;
-        balanced)   echo "~8 GB" ;;
-        balanced+)  echo "~14 GB" ;;
-        smart)      echo "~28 GB" ;;
-        *)          echo "?" ;;
-    esac
+  case "$1" in
+  light) echo "~3 GB" ;;
+  balanced) echo "~8 GB" ;;
+  balanced+) echo "~14 GB" ;;
+  smart) echo "~28 GB" ;;
+  *) echo "?" ;;
+  esac
 }
 
 tier_hf() {
-    case "$1" in
-        light)      echo "google/gemma-4-E4B-it-qat-q4_0-gguf" ;;
-        balanced)   echo "google/gemma-4-12B-it-qat-q4_0-gguf" ;;
-        balanced+)  echo "unsloth/gemma-4-12b-it-GGUF:UD-Q8_K_XL" ;;
-        smart)      echo "unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q6_K_XL" ;;
-        *)          echo "" ;;
-    esac
+  case "$1" in
+  light) echo "$LIGHT_MODELNAME" ;;
+  balanced) echo "$BALANCED_MODELNAME" ;;
+  balanced+) echo "$BALANCEDPLUS_MODELNAME" ;;
+  smart) echo "$SMART_MODELNAME" ;;
+  *) echo "" ;;
+  esac
 }
 
 is_valid_tier() {
-    case "$1" in
-        light|balanced|balanced+|smart) return 0 ;;
-        *) return 1 ;;
-    esac
+  case "$1" in
+  light | balanced | balanced+ | smart) return 0 ;;
+  *) return 1 ;;
+  esac
 }
 
 # Returns 0 if the model's .gguf file is already in the HuggingFace hub cache
 model_is_cached() {
-    local tier="$1" hf_repo repo cache_dir cache_name
-    hf_repo=$(tier_hf "$tier")
-    repo="${hf_repo%%:*}"    # strip :UD-Q8_K_XL etc.
-    cache_dir="${HF_HOME:-${HOME}/.cache/huggingface}/hub"
-    cache_name="models--${repo/\//--}"   # org/repo → models--org--repo
-    [[ -d "${cache_dir}/${cache_name}" ]] && \
-        find -L "${cache_dir}/${cache_name}" -name "*.gguf" -size +100k 2>/dev/null | grep -q .
+  local tier="$1" hf_repo repo cache_dir cache_name
+  hf_repo=$(tier_hf "$tier")
+  repo="${hf_repo%%:*}" # strip :UD-Q8_K_XL etc.
+  cache_dir="${HF_HOME:-${HOME}/.cache/huggingface}/hub"
+  cache_name="models--${repo/\//--}" # org/repo → models--org--repo
+  [[ -d "${cache_dir}/${cache_name}" ]] &&
+    find -L "${cache_dir}/${cache_name}" -name "*.gguf" -size +100k 2>/dev/null | grep -q .
 }
 
 SYSTEM_PROMPT_BASE="You are a CLI-based assistant for short questions about CLI syntax, bash, and programming languages (javascript, python, html, etc). Be concise and show a short example where it helps."
 
 # --- colours (24-bit truecolor; works in iTerm2/kitty/WezTerm/VS Code term) ---
-Q_BG=$'\e[48;2;128;48;48m'      # light maroon
-Q_FG=$'\e[38;2;255;183;107m'    # pastel orange
+Q_BG=$'\e[48;2;128;48;48m'   # light maroon
+Q_FG=$'\e[38;2;255;183;107m' # pastel orange
 RESET=$'\e[0m'
 CYAN=$'\e[36m'
 BOLD=$'\e[1m'
 
 style_block() {
-    local bg=$1 fg=$2 line
-    while IFS= read -r line; do
-        printf '%s%s%s\e[K%s\n' "$bg" "$fg" "$line" "$RESET"
-    done
-    [ -n "$line" ] && printf '%s%s%s\e[K%s\n' "$bg" "$fg" "$line" "$RESET"
+  local bg=$1 fg=$2 line
+  while IFS= read -r line; do
+    printf '%s%s%s\e[K%s\n' "$bg" "$fg" "$line" "$RESET"
+  done
+  [ -n "$line" ] && printf '%s%s%s\e[K%s\n' "$bg" "$fg" "$line" "$RESET"
 }
 
 render_md() {
-    awk '
+  awk '
     function bold(s,   out, pre, tok) {
         out = ""
         while (match(s, /\*\*[^*]+\*\*/)) {
@@ -143,243 +147,247 @@ render_md() {
 }
 
 spinner() {
-    local pid=$1 label="${2:-Working}" frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' i=0
-    while kill -0 "$pid" 2>/dev/null; do
-        printf "\r${CYAN}%s${RESET} %s..." "${frames:$((i % ${#frames})):1}" "$label" >&2
-        sleep 0.08
-        ((i++))
-    done
-    printf "\r\e[K" >&2
+  local pid=$1 label="${2:-Working}" frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    printf "\r${CYAN}%s${RESET} %s..." "${frames:$((i % ${#frames})):1}" "$label" >&2
+    sleep 0.08
+    ((i++))
+  done
+  printf "\r\e[K" >&2
 }
 
 # State-aware spinner: polls /running every ~2s and updates label to reflect
 # whether the model is downloading (first run), loading from disk, or generating.
 smart_spinner() {
-    local pid=$1 profile="$2" cached="$3"
-    local frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' i=0 label="Working" start=$SECONDS
-    while kill -0 "$pid" 2>/dev/null; do
-        if (( i % 25 == 0 )); then
-            local state elapsed
-            state=$(curl -sf -m 1 "$ENDPOINT/running" \
-                | jq -r ".running[] | select(.model==\"$profile\") | .state" 2>/dev/null)
-            elapsed=$(( SECONDS - start ))
-            case "$state" in
-                starting)
-                    if [[ "$cached" == "false" ]] || (( elapsed > 60 )); then
-                        label="Downloading model (first run, may take a few minutes)"
-                    else
-                        label="Loading model into memory"
-                    fi
-                    ;;
-                ready) label="Generating response" ;;
-            esac
+  local pid=$1 profile="$2" cached="$3"
+  local frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' i=0 label="Working" start=$SECONDS
+  while kill -0 "$pid" 2>/dev/null; do
+    if ((i % 25 == 0)); then
+      local state elapsed
+      state=$(curl -sf -m 1 "$ENDPOINT/running" |
+        jq -r ".running[] | select(.model==\"$profile\") | .state" 2>/dev/null)
+      elapsed=$((SECONDS - start))
+      case "$state" in
+      starting)
+        if [[ "$cached" == "false" ]] || ((elapsed > 60)); then
+          label="Downloading model (first run, may take a few minutes)"
+        else
+          label="Loading model into memory"
         fi
-        printf "\r\e[K${CYAN}%s${RESET} %s..." "${frames:$((i % ${#frames})):1}" "$label" >&2
-        sleep 0.08
-        (( i++ ))
-    done
-    printf "\r\e[K" >&2
+        ;;
+      ready) label="Generating response" ;;
+      esac
+    fi
+    printf "\r\e[K${CYAN}%s${RESET} %s..." "${frames:$((i % ${#frames})):1}" "$label" >&2
+    sleep 0.08
+    ((i++))
+  done
+  printf "\r\e[K" >&2
 }
 
 # --- config helpers ----------------------------------------------------------
 load_config() {
-    [[ -f "$QWE_CONFIG" ]] && source "$QWE_CONFIG"
+  [[ -f "$QWE_CONFIG" ]] && source "$QWE_CONFIG"
 }
 
 save_config() {
-    mkdir -p "$QWE_CONFIG_DIR"
-    printf 'MODEL_TIER=%s\nENDPOINT=%s\n' "$MODEL_TIER" "$ENDPOINT" > "$QWE_CONFIG"
+  mkdir -p "$QWE_CONFIG_DIR"
+  printf 'MODEL_TIER=%s\nENDPOINT=%s\n' "$MODEL_TIER" "$ENDPOINT" >"$QWE_CONFIG"
 }
 
 # --- server discovery --------------------------------------------------------
 discover_endpoint() {
-    printf "${CYAN}⠿${RESET} Scanning for LLM server (ports 8000-9000)..." >&2
-    local found=""
-    # Check common ports first for speed, then brute-force the rest
-    for port in 8080 8000 11434 8888 8001 $(seq 8002 9000); do
-        nc -z -w1 localhost "$port" 2>/dev/null || continue
-        if curl -sf -m 1 -o /dev/null "http://localhost:$port/v1/models"; then
-            found="http://localhost:$port"
-            break
-        fi
-    done
-    printf "\r\e[K" >&2
-    echo "$found"
+  printf "${CYAN}⠿${RESET} Scanning for LLM server (ports 8000-9000)..." >&2
+  local found=""
+  # Check common ports first for speed, then brute-force the rest
+  for port in 8080 8000 11434 8888 8001 $(seq 8002 9000); do
+    nc -z -w1 localhost "$port" 2>/dev/null || continue
+    if curl -sf -m 1 -o /dev/null "http://localhost:$port/v1/models"; then
+      found="http://localhost:$port"
+      break
+    fi
+  done
+  printf "\r\e[K" >&2
+  echo "$found"
 }
 
 ensure_server() {
-    # Try cached endpoint first
-    if curl -sf -m 2 -o /dev/null "$ENDPOINT/v1/models"; then
-        return 0
-    fi
+  # Try cached endpoint first
+  if curl -sf -m 2 -o /dev/null "$ENDPOINT/v1/models"; then
+    return 0
+  fi
 
-    # Scan for any running server
-    local found
-    found=$(discover_endpoint)
-    if [[ -n "$found" ]]; then
-        ENDPOINT="$found"
-        save_config
-        return 0
-    fi
+  # Scan for any running server
+  local found
+  found=$(discover_endpoint)
+  if [[ -n "$found" ]]; then
+    ENDPOINT="$found"
+    save_config
+    return 0
+  fi
 
-    # No server — try to start llama-swap
-    if ! command -v llama-swap &>/dev/null; then
-        echo "Error: No LLM server found and llama-swap is not installed." >&2
-        echo "Run: qwe setup" >&2
-        return 1
-    fi
-    if [[ ! -f "$LLAMA_SWAP_CONFIG" ]]; then
-        echo "Error: No llama-swap config at $LLAMA_SWAP_CONFIG" >&2
-        echo "Run: qwe setup" >&2
-        return 1
-    fi
-
-    echo "No server running — starting llama-swap..." >&2
-    local setup_script
-    setup_script="$(dirname "$(realpath "$0")")/qwe-setup"
-    if [[ -x "$setup_script" ]]; then
-        "$setup_script" start
-    else
-        qwe-setup start
-    fi
-
-    # Retry discovery after a brief pause
-    sleep 2
-    found=$(discover_endpoint)
-    if [[ -n "$found" ]]; then
-        ENDPOINT="$found"
-        save_config
-        return 0
-    fi
-    echo "Error: llama-swap started but not yet reachable. Retry in a moment." >&2
+  # No server — try to start llama-swap
+  if ! command -v llama-swap &>/dev/null; then
+    echo "Error: No LLM server found and llama-swap is not installed." >&2
+    echo "Run: qwe setup" >&2
     return 1
+  fi
+  if [[ ! -f "$LLAMA_SWAP_CONFIG" ]]; then
+    echo "Error: No llama-swap config at $LLAMA_SWAP_CONFIG" >&2
+    echo "Run: qwe setup" >&2
+    return 1
+  fi
+
+  echo "No server running — starting llama-swap..." >&2
+  local setup_script
+  setup_script="$(dirname "$(realpath "$0")")/qwe-setup"
+  if [[ -x "$setup_script" ]]; then
+    "$setup_script" start
+  else
+    qwe-setup start
+  fi
+
+  # Retry discovery after a brief pause
+  sleep 2
+  found=$(discover_endpoint)
+  if [[ -n "$found" ]]; then
+    ENDPOINT="$found"
+    save_config
+    return 0
+  fi
+  echo "Error: llama-swap started but not yet reachable. Retry in a moment." >&2
+  return 1
 }
 
 # --- tools check -------------------------------------------------------------
 check_tools() {
-    local missing=()
-    command -v llama-server &>/dev/null || missing+=("llama-server")
-    command -v llama-swap   &>/dev/null || missing+=("llama-swap")
-    command -v jq           &>/dev/null || missing+=("jq")
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        echo "Missing required tools: ${missing[*]}" >&2
-        echo "Run: qwe setup" >&2
-        return 1
-    fi
+  local missing=()
+  command -v llama-server &>/dev/null || missing+=("llama-server")
+  command -v llama-swap &>/dev/null || missing+=("llama-swap")
+  command -v jq &>/dev/null || missing+=("jq")
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "Missing required tools: ${missing[*]}" >&2
+    echo "Run: qwe setup" >&2
+    return 1
+  fi
 }
 
 # --- model tier switch -------------------------------------------------------
 cmd_switch() {
-    local tier="$1"
-    if ! is_valid_tier "$tier"; then
-        echo "Unknown tier '$tier'. Valid: light  balanced  balanced+  smart" >&2
-        return 1
-    fi
+  local tier="$1"
+  if ! is_valid_tier "$tier"; then
+    echo "Unknown tier '$tier'. Valid: light  balanced  balanced+  smart" >&2
+    return 1
+  fi
 
-    load_config
-    MODEL_TIER="$tier"
-    save_config
+  load_config
+  MODEL_TIER="$tier"
+  save_config
 
-    # Ensure profile exists in llama-swap config
-    local setup_script
-    setup_script="$(dirname "$(realpath "$0")")/qwe-setup"
-    if [[ -x "$setup_script" ]]; then
-        "$setup_script" ensure-profile "$tier"
-    else
-        qwe-setup ensure-profile "$tier"
-    fi
+  # Ensure profile exists in llama-swap config
+  local setup_script
+  setup_script="$(dirname "$(realpath "$0")")/qwe-setup"
+  if [[ -x "$setup_script" ]]; then
+    "$setup_script" ensure-profile "$tier"
+  else
+    qwe-setup ensure-profile "$tier"
+  fi
 
-    local profile ram
-    profile=$(tier_profile "$tier")
-    ram=$(tier_ram "$tier")
-    printf "${BOLD}Switched to:${RESET} %s  (profile: %s,  RAM: %s)\n" \
-        "$tier" "$profile" "$ram"
+  local profile ram
+  profile=$(tier_profile "$tier")
+  ram=$(tier_ram "$tier")
+  printf "${BOLD}Switched to:${RESET} %s  (profile: %s,  RAM: %s)\n" \
+    "$tier" "$profile" "$ram"
 
-    # Eager hot-swap: trigger model load now via a 1-token request
-    if curl -sf -m 2 -o /dev/null "$ENDPOINT/v1/models"; then
-        local cached="false"
-        model_is_cached "$tier" && cached="true"
-        local swap_body
-        swap_body=$(jq -n --arg m "$profile" '{
+  # Eager hot-swap: trigger model load now via a 1-token request
+  if curl -sf -m 2 -o /dev/null "$ENDPOINT/v1/models"; then
+    local cached="false"
+    model_is_cached "$tier" && cached="true"
+    local swap_body
+    swap_body=$(jq -n --arg m "$profile" '{
           model: $m,
           messages: [{"role":"user","content":"hi"}],
           max_tokens: 1
         }')
-        local tmp
-        tmp=$(mktemp)
-        curl -s --max-time 600 "$ENDPOINT/v1/chat/completions" \
-            -H "Content-Type: application/json" \
-            -d "$swap_body" > "$tmp" &
-        smart_spinner $! "$profile" "$cached"
-        wait $!
-        if jq -e '.choices[0].message.content' "$tmp" &>/dev/null 2>&1; then
-            echo "Model ready."
-        else
-            echo "Load request sent — model may still be initializing."
-        fi
-        rm -f "$tmp"
+    local tmp
+    tmp=$(mktemp)
+    curl -s --max-time 600 "$ENDPOINT/v1/chat/completions" \
+      -H "Content-Type: application/json" \
+      -d "$swap_body" >"$tmp" &
+    smart_spinner $! "$profile" "$cached"
+    wait $!
+    if jq -e '.choices[0].message.content' "$tmp" &>/dev/null 2>&1; then
+      echo "Model ready."
     else
-        echo "Server not running — tier saved. Model will load on next query."
+      echo "Load request sent — model may still be initializing."
     fi
+    rm -f "$tmp"
+  else
+    echo "Server not running — tier saved. Model will load on next query."
+  fi
 }
 
 # --- status ------------------------------------------------------------------
 cmd_status() {
-    load_config
-    local profile ram
-    profile=$(tier_profile "$MODEL_TIER")
-    ram=$(tier_ram "$MODEL_TIER")
-    [[ -z "$profile" ]] && profile="unknown"
-    printf "${BOLD}qwe status${RESET}\n"
-    printf "  Config:    %s\n" "$QWE_CONFIG"
-    printf "  Tier:      %s  (profile: %s,  RAM: %s)\n" \
-        "$MODEL_TIER" "$profile" "$ram"
-    printf "  Endpoint:  %s\n" "$ENDPOINT"
-    printf "  Server:    "
-    if curl -sf -m 2 -o /dev/null "$ENDPOINT/v1/models"; then
-        local models
-        models=$(curl -sf -m 2 "$ENDPOINT/v1/models" \
-            | jq -r '[.data[].id] | join(", ")' 2>/dev/null)
-        printf "running  (models: %s)\n" "${models:-unknown}"
-    else
-        printf "not reachable\n"
-    fi
-    printf "  llama-server: "
-    command -v llama-server &>/dev/null \
-        && printf "%s\n" "$(command -v llama-server)" || printf "not found\n"
-    printf "  llama-swap:   "
-    command -v llama-swap &>/dev/null \
-        && printf "%s\n" "$(command -v llama-swap)" || printf "not found\n"
+  load_config
+  local profile ram
+  profile=$(tier_profile "$MODEL_TIER")
+  ram=$(tier_ram "$MODEL_TIER")
+  name=$(tier_hf "$MODEL_TIER")
+  [[ -z "$profile" ]] && profile="unknown"
+  printf "${BOLD}qwe status${RESET}\n"
+  printf "  Config:    %s\n" "$QWE_CONFIG"
+  printf "  Tier:      %s  (profile: %s,  RAM: %s,  model: %s)\n" \
+    "$MODEL_TIER" "$profile" "$ram" "$name"
+  printf "  Endpoint:  %s\n" "$ENDPOINT"
+  printf "  Server:    "
+  if curl -sf -m 2 -o /dev/null "$ENDPOINT/v1/models"; then
+    local models
+    models=$(curl -sf -m 2 "$ENDPOINT/v1/models" |
+      jq -r '[.data[].id] | join(", ")' 2>/dev/null)
+    printf "running  (models: %s)\n" "${models:-unknown}"
+  else
+    printf "not reachable\n"
+  fi
+  printf "  llama-server: "
+  command -v llama-server &>/dev/null &&
+    printf "%s\n" "$(command -v llama-server)" || printf "not found\n"
+  printf "  llama-swap:   "
+  command -v llama-swap &>/dev/null &&
+    printf "%s\n" "$(command -v llama-swap)" || printf "not found\n"
 }
 
 # --- query -------------------------------------------------------------------
 cmd_query() {
-    load_config
-    check_tools || exit 1
-    ensure_server || exit 1
+  load_config
+  check_tools || exit 1
+  ensure_server || exit 1
 
-    local profile
-    profile=$(tier_profile "$MODEL_TIER")
-    local system_prompt="$SYSTEM_PROMPT_BASE"
-    # Qwen needs <|think_off|> via the froggeric template; Gemma disables thinking server-side
-    [[ "$MODEL_TIER" == "smart" ]] && system_prompt+=" <|think_off|>"
+  local profile
+  profile=$(tier_profile "$MODEL_TIER")
+  local system_prompt="$SYSTEM_PROMPT_BASE"
+  # Qwen needs <|think_off|> via the froggeric template; Gemma disables thinking server-side
+  [[ "$MODEL_TIER" == "smart" ]] && system_prompt+=" <|think_off|>"
 
-    local USER_QUERY="$*"
-    if [[ -z "$USER_QUERY" ]]; then
-        echo "What is your question?"
-        read -r -e USER_QUERY
-        _cols=$(tput cols)
-        _len=${#USER_QUERY}
-        _rows=$(((_len + _cols - 1) / _cols))
-        ((_rows < 1)) && _rows=1
-        for ((_i=0; _i<_rows; _i++)); do printf '\e[1A\e[2K'; done
-    fi
-    [[ -z "$USER_QUERY" ]] && { echo "No question provided." >&2; exit 1; }
+  local USER_QUERY="$*"
+  if [[ -z "$USER_QUERY" ]]; then
+    echo "What is your question?"
+    read -r -e USER_QUERY
+    _cols=$(tput cols)
+    _len=${#USER_QUERY}
+    _rows=$(((_len + _cols - 1) / _cols))
+    ((_rows < 1)) && _rows=1
+    for ((_i = 0; _i < _rows; _i++)); do printf '\e[1A\e[2K'; done
+  fi
+  [[ -z "$USER_QUERY" ]] && {
+    echo "No question provided." >&2
+    exit 1
+  }
 
-    printf '%s' "$USER_QUERY" | style_block "$Q_BG" "$Q_FG"
+  printf '%s' "$USER_QUERY" | style_block "$Q_BG" "$Q_FG"
 
-    local BODY
-    BODY=$(jq -n --arg m "$profile" --arg sys "$system_prompt" --arg q "$USER_QUERY" '{
+  local BODY
+  BODY=$(jq -n --arg m "$profile" --arg sys "$system_prompt" --arg q "$USER_QUERY" '{
       model: $m,
       messages: [
         { role: "system", content: $sys },
@@ -388,97 +396,97 @@ cmd_query() {
       max_tokens: 1024
     }')
 
-    local cached="false"
-    model_is_cached "$MODEL_TIER" && cached="true"
+  local cached="false"
+  model_is_cached "$MODEL_TIER" && cached="true"
 
-    local RESPONSE
-    RESPONSE=$(mktemp)
-    curl -s --max-time 300 "$ENDPOINT/v1/chat/completions" \
-        -H "Content-Type: application/json" \
-        -d "$BODY" > "$RESPONSE" &
-    smart_spinner $! "$profile" "$cached"
-    wait $!
+  local RESPONSE
+  RESPONSE=$(mktemp)
+  curl -s --max-time 300 "$ENDPOINT/v1/chat/completions" \
+    -H "Content-Type: application/json" \
+    -d "$BODY" >"$RESPONSE" &
+  smart_spinner $! "$profile" "$cached"
+  wait $!
 
-    jq -r '
+  jq -r '
       .choices[0].message.content //
       (try .error.message catch .error) //
       "No response from server."
-    ' < "$RESPONSE" | render_md
-    rm -f "$RESPONSE"
+    ' <"$RESPONSE" | render_md
+  rm -f "$RESPONSE"
 }
 
 # --- stop / free RAM ---------------------------------------------------------
 cmd_stop() {
-    local stopped=0
+  local stopped=0
 
-    local swap_pid
-    swap_pid=$(pgrep -f "llama-swap --config" 2>/dev/null | head -1)
-    if [[ -n "$swap_pid" ]]; then
-        kill "$swap_pid" 2>/dev/null \
-            && printf "llama-swap (PID %s) stopped.\n" "$swap_pid" \
-            || printf "Could not stop llama-swap (PID %s).\n" "$swap_pid" >&2
-        rm -f "${QWE_CONFIG_DIR}/llama-swap.pid"
-        stopped=1
-    fi
+  local swap_pid
+  swap_pid=$(pgrep -f "llama-swap --config" 2>/dev/null | head -1)
+  if [[ -n "$swap_pid" ]]; then
+    kill "$swap_pid" 2>/dev/null &&
+      printf "llama-swap (PID %s) stopped.\n" "$swap_pid" ||
+      printf "Could not stop llama-swap (PID %s).\n" "$swap_pid" >&2
+    rm -f "${QWE_CONFIG_DIR}/llama-swap.pid"
+    stopped=1
+  fi
 
-    local server_pid
-    while IFS= read -r server_pid; do
-        [[ -z "$server_pid" ]] && continue
-        kill "$server_pid" 2>/dev/null \
-            && printf "llama-server (PID %s) stopped.\n" "$server_pid" \
-            || printf "Could not stop llama-server (PID %s).\n" "$server_pid" >&2
-        stopped=1
-    done < <(pgrep -f "llama-server" 2>/dev/null)
+  local server_pid
+  while IFS= read -r server_pid; do
+    [[ -z "$server_pid" ]] && continue
+    kill "$server_pid" 2>/dev/null &&
+      printf "llama-server (PID %s) stopped.\n" "$server_pid" ||
+      printf "Could not stop llama-server (PID %s).\n" "$server_pid" >&2
+    stopped=1
+  done < <(pgrep -f "llama-server" 2>/dev/null)
 
-    (( stopped == 0 )) && echo "Nothing running."
-    return 0
+  ((stopped == 0)) && echo "Nothing running."
+  return 0
 }
 
 # --- help --------------------------------------------------------------------
 cmd_help() {
-    printf "${BOLD}qwe${RESET} — quick local-LLM Q&A\n\n"
-    printf "${BOLD}Usage:${RESET}\n"
-    printf "  qwe [question]         Ask a question (interactive prompt if omitted)\n"
-    printf "  qwe light              Switch to light model  (~3 GB RAM, Gemma 4E4B)\n"
-    printf "  qwe balanced           Switch to balanced     (~8 GB RAM, Gemma 4-12B)\n"
-    printf "  qwe balanced+          Switch to balanced+    (~14 GB RAM, Gemma 4-12B Q8)\n"
-    printf "  qwe smart              Switch to smart        (~28 GB RAM, Qwen3.6-35B Q6)\n"
-    printf "  qwe setup              Run the interactive setup wizard\n"
-    printf "  qwe status             Show current tier, endpoint, and server state\n"
-    printf "  qwe stop               Kill llama-swap and llama-server (free RAM)\n"
-    printf "  qwe --help             Show this help\n\n"
-    printf "${BOLD}Model tiers:${RESET}\n"
-    printf "  Switching tiers persists the choice and hot-loads the model immediately.\n"
-    printf "  The active tier is stored in ~/.config/qwe/config.\n\n"
-    printf "${BOLD}First time?${RESET}  Run: qwe setup\n"
+  printf "${BOLD}qwe${RESET} — quick local-LLM Q&A\n\n"
+  printf "${BOLD}Usage:${RESET}\n"
+  printf "  qwe [question]         Ask a question (interactive prompt if omitted)\n"
+  printf "  qwe light              Switch to light model  (~3 GB RAM, Gemma 4E4B)\n"
+  printf "  qwe balanced           Switch to balanced     (~8 GB RAM, Gemma 4-12B)\n"
+  printf "  qwe balanced+          Switch to balanced+    (~14 GB RAM, Gemma 4-12B Q8)\n"
+  printf "  qwe smart              Switch to smart        (~28 GB RAM, Qwen3.6-35B Q6)\n"
+  printf "  qwe setup              Run the interactive setup wizard\n"
+  printf "  qwe status             Show current tier, endpoint, and server state\n"
+  printf "  qwe stop               Kill llama-swap and llama-server (free RAM)\n"
+  printf "  qwe --help             Show this help\n\n"
+  printf "${BOLD}Model tiers:${RESET}\n"
+  printf "  Switching tiers persists the choice and hot-loads the model immediately.\n"
+  printf "  The active tier is stored in ~/.config/qwe/config.\n\n"
+  printf "${BOLD}First time?${RESET}  Run: qwe setup\n"
 }
 
 # --- dispatch ----------------------------------------------------------------
 case "$1" in
-    light|balanced|"balanced+"|smart)
-        cmd_switch "$1"
-        ;;
-    setup)
-        setup_script="$(dirname "$(realpath "$0")")/qwe-setup"
-        if [[ -x "$setup_script" ]]; then
-            "$setup_script" wizard
-        else
-            qwe-setup wizard
-        fi
-        ;;
-    status)
-        cmd_status
-        ;;
-    stop|cleanup)
-        cmd_stop
-        ;;
-    --help|-h|help)
-        cmd_help
-        ;;
-    "")
-        cmd_query
-        ;;
-    *)
-        cmd_query "$@"
-        ;;
+light | balanced | "balanced+" | smart)
+  cmd_switch "$1"
+  ;;
+setup)
+  setup_script="$(dirname "$(realpath "$0")")/qwe-setup"
+  if [[ -x "$setup_script" ]]; then
+    "$setup_script" wizard
+  else
+    qwe-setup wizard
+  fi
+  ;;
+status)
+  cmd_status
+  ;;
+stop | cleanup)
+  cmd_stop
+  ;;
+--help | -h | help)
+  cmd_help
+  ;;
+"")
+  cmd_query
+  ;;
+*)
+  cmd_query "$@"
+  ;;
 esac
