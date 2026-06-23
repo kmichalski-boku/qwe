@@ -1,0 +1,507 @@
+#!/bin/bash
+# ai2-setup - install, configure, and manage the ai2 local LLM stack
+#
+# Subcommands:
+#   wizard           — interactive setup for new users
+#   install          — install llama.cpp + llama-swap
+#   ensure-profile   — append a model profile to llama-swap config if absent
+#   start            — start llama-swap as a background daemon
+#   status           — show install / running state
+
+AI2_CONFIG_DIR="${HOME}/.config/ai2"
+AI2_CONFIG="${AI2_CONFIG_DIR}/config"
+LLAMA_SWAP_CONFIG_DIR="${HOME}/.config/llama-swap"
+LLAMA_SWAP_CONFIG="${LLAMA_SWAP_CONFIG_DIR}/config.yaml"
+PID_FILE="${AI2_CONFIG_DIR}/llama-swap.pid"
+FROGGERIC_TEMPLATE="${LLAMA_SWAP_CONFIG_DIR}/qwen3.6-froggeric.jinja"
+FROGGERIC_URL="https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates/resolve/main/qwen3.6/chat_template.jinja"
+
+# Model tier definitions (kept in sync with ai2)
+declare -A TIER_PROFILE TIER_HF TIER_RAM TIER_CTX
+TIER_PROFILE[light]="ai2-light"
+TIER_PROFILE[balanced]="ai2-balanced"
+TIER_PROFILE[balanced+]="ai2-balanced-plus"
+TIER_PROFILE[smart]="ai2-smart"
+
+TIER_HF[light]="google/gemma-4-E4B-it-qat-q4_0-gguf"
+TIER_HF[balanced]="google/gemma-4-12B-it-qat-q4_0-gguf"
+TIER_HF[balanced+]="unsloth/gemma-4-12b-it-GGUF:UD-Q8_K_XL"
+TIER_HF[smart]="unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q6_K"
+
+TIER_RAM[light]="~3 GB"
+TIER_RAM[balanced]="~8 GB"
+TIER_RAM[balanced+]="~14 GB"
+TIER_RAM[smart]="~28 GB"
+
+TIER_CTX[light]="16384"
+TIER_CTX[balanced]="16384"
+TIER_CTX[balanced+]="32768"
+TIER_CTX[smart]="16384"
+
+BOLD=$'\e[1m'
+RESET=$'\e[0m'
+GREEN=$'\e[32m'
+YELLOW=$'\e[33m'
+RED=$'\e[31m'
+CYAN=$'\e[36m'
+
+info()    { printf "${CYAN}→${RESET} %s\n" "$*"; }
+ok()      { printf "${GREEN}✓${RESET} %s\n" "$*"; }
+warn()    { printf "${YELLOW}!${RESET} %s\n" "$*" >&2; }
+err()     { printf "${RED}✗${RESET} %s\n" "$*" >&2; }
+step()    { printf "\n${BOLD}%s${RESET}\n" "$*"; }
+
+# --- OS detection ------------------------------------------------------------
+detect_os() {
+    case "$(uname -s)" in
+        Darwin) echo "macos" ;;
+        Linux)  echo "linux" ;;
+        *)      echo "unknown" ;;
+    esac
+}
+
+detect_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64)   echo "x86_64" ;;
+        aarch64|arm64)  echo "arm64" ;;
+        *)              echo "$(uname -m)" ;;
+    esac
+}
+
+# --- installation ------------------------------------------------------------
+install_with_brew() {
+    local pkg="$1"
+    if command -v brew &>/dev/null; then
+        info "Installing $pkg via Homebrew..."
+        brew install "$pkg"
+    else
+        return 1
+    fi
+}
+
+download_llama_server_linux() {
+    local arch
+    arch=$(detect_arch)
+    local install_dir="${HOME}/.local/bin"
+    mkdir -p "$install_dir"
+
+    info "Fetching latest llama.cpp release for linux-$arch..."
+    local release_url
+    release_url=$(curl -sf "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" \
+        | grep -o '"browser_download_url": *"[^"]*linux[^"]*'"$arch"'[^"]*"' \
+        | grep -v 'rpc\|mpi\|sycl' \
+        | head -1 \
+        | grep -o 'https://[^"]*')
+
+    if [[ -z "$release_url" ]]; then
+        err "Could not find a linux-$arch llama.cpp binary. Please install manually."
+        return 1
+    fi
+
+    local tmp_zip
+    tmp_zip=$(mktemp -d)
+    info "Downloading $release_url..."
+    curl -L --progress-bar -o "$tmp_zip/llama.zip" "$release_url"
+    unzip -q "$tmp_zip/llama.zip" -d "$tmp_zip/llama"
+    local server_bin
+    server_bin=$(find "$tmp_zip/llama" -name "llama-server" -type f | head -1)
+    if [[ -z "$server_bin" ]]; then
+        err "llama-server binary not found in archive."
+        rm -rf "$tmp_zip"
+        return 1
+    fi
+    cp "$server_bin" "$install_dir/llama-server"
+    chmod +x "$install_dir/llama-server"
+    rm -rf "$tmp_zip"
+    ok "llama-server installed to $install_dir/llama-server"
+    echo "Make sure $install_dir is in your PATH."
+}
+
+download_llama_swap_binary() {
+    local arch
+    arch=$(detect_arch)
+    local os
+    os=$(detect_os)
+    local install_dir="${HOME}/.local/bin"
+    mkdir -p "$install_dir"
+
+    local go_os="linux"
+    [[ "$os" == "macos" ]] && go_os="darwin"
+    local go_arch="amd64"
+    [[ "$arch" == "arm64" ]] && go_arch="arm64"
+
+    info "Fetching latest llama-swap release..."
+    local release_url
+    release_url=$(curl -sf "https://api.github.com/repos/mostlygeek/llama-swap/releases/latest" \
+        | grep -o '"browser_download_url": *"[^"]*'"${go_os}_${go_arch}"'[^"]*"' \
+        | head -1 \
+        | grep -o 'https://[^"]*')
+
+    if [[ -z "$release_url" ]]; then
+        err "Could not find a llama-swap binary for ${go_os}_${go_arch}."
+        return 1
+    fi
+
+    info "Downloading $release_url..."
+    curl -L --progress-bar -o "$install_dir/llama-swap" "$release_url"
+    chmod +x "$install_dir/llama-swap"
+    ok "llama-swap installed to $install_dir/llama-swap"
+}
+
+cmd_install() {
+    local os
+    os=$(detect_os)
+
+    step "Installing llama-server (llama.cpp)"
+    if command -v llama-server &>/dev/null; then
+        ok "llama-server already installed: $(command -v llama-server)"
+    else
+        case "$os" in
+            macos)
+                install_with_brew llama.cpp || { err "Homebrew install failed."; return 1; }
+                ok "llama-server installed."
+                ;;
+            linux)
+                if command -v brew &>/dev/null; then
+                    install_with_brew llama.cpp || download_llama_server_linux
+                else
+                    download_llama_server_linux
+                fi
+                ;;
+            *)
+                err "Unsupported OS. Install llama.cpp manually."
+                return 1
+                ;;
+        esac
+    fi
+
+    step "Installing llama-swap"
+    if command -v llama-swap &>/dev/null; then
+        ok "llama-swap already installed: $(command -v llama-swap)"
+    else
+        case "$os" in
+            macos)
+                install_with_brew llama-swap \
+                    || download_llama_swap_binary \
+                    || { err "Could not install llama-swap."; return 1; }
+                ;;
+            linux)
+                if command -v brew &>/dev/null; then
+                    install_with_brew llama-swap || download_llama_swap_binary
+                else
+                    download_llama_swap_binary
+                fi
+                ;;
+        esac
+        command -v llama-swap &>/dev/null && ok "llama-swap installed."
+    fi
+
+    step "Installing jq"
+    if command -v jq &>/dev/null; then
+        ok "jq already installed."
+    else
+        case "$os" in
+            macos)  install_with_brew jq ;;
+            linux)
+                if command -v apt-get &>/dev/null; then
+                    sudo apt-get install -y jq
+                elif command -v brew &>/dev/null; then
+                    install_with_brew jq
+                else
+                    err "Could not install jq. Install it manually."
+                fi
+                ;;
+        esac
+    fi
+}
+
+# --- llama-swap config management -------------------------------------------
+profile_exists() {
+    local profile="$1"
+    [[ -f "$LLAMA_SWAP_CONFIG" ]] && grep -q "^  ${profile}:" "$LLAMA_SWAP_CONFIG"
+}
+
+# Emit YAML for a Gemma profile (light / balanced / balanced+)
+gemma_profile_yaml() {
+    local name="$1" hf="$2" ctx="$3"
+    cat <<YAML
+
+  ${name}:
+    cmd: |
+      \${llama-server}
+      -hf ${hf}
+      --ctx-size ${ctx}
+      --temp 1.0
+      --top-p 0.95
+      --top-k 64
+      --chat-template-kwargs '{"enable_thinking":false}'
+      --port \${PORT}
+    ttl: 7200
+YAML
+}
+
+# Emit YAML for the Qwen smart profile (reuses existing macros)
+smart_profile_yaml() {
+    cat <<'YAML'
+
+  ai2-smart:
+    cmd: |
+      ${llama-server}
+      ${common-flags}
+      --ctx-size 16384
+      --temp 0.7
+      --top-p 0.8
+      --presence-penalty 1.5
+    ttl: 7200
+YAML
+}
+
+# Emit YAML for a full fresh config (new installs)
+generate_fresh_config() {
+    local llama_server_bin="$1"
+    local default_tier="$2"
+    local preload_profile="${TIER_PROFILE[$default_tier]}"
+    cat <<YAML
+# llama-swap config generated by ai2-setup
+# Edit freely — ai2-setup will only append new profiles, never overwrite existing ones.
+
+macros:
+  llama-server: "${llama_server_bin}"
+  template: "\${env.HOME}/.config/llama-swap/qwen3.6-froggeric.jinja"
+  common-flags: >
+    --port \${PORT}
+    -hf unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q6_K
+    -ngl 99
+    --flash-attn on
+    --jinja
+    --chat-template-file \${template}
+    --top-k 20
+    --min-p 0.0
+    --repeat-penalty 1.0
+    --spec-type draft-mtp
+    --spec-draft-n-max 2
+
+models:
+YAML
+    gemma_profile_yaml "ai2-light"         "${TIER_HF[light]}"     "${TIER_CTX[light]}"
+    gemma_profile_yaml "ai2-balanced"      "${TIER_HF[balanced]}"  "${TIER_CTX[balanced]}"
+    gemma_profile_yaml "ai2-balanced-plus" "${TIER_HF[balanced+]}" "${TIER_CTX[balanced+]}"
+    smart_profile_yaml
+    cat <<YAML
+
+startPort: 9999
+
+hooks:
+  on_startup:
+    preload:
+      - "${preload_profile}"
+YAML
+}
+
+cmd_ensure_profile() {
+    local tier="$1"
+    if [[ -z "${TIER_PROFILE[$tier]}" ]]; then
+        err "Unknown tier: $tier"
+        return 1
+    fi
+
+    local profile="${TIER_PROFILE[$tier]}"
+
+    if profile_exists "$profile"; then
+        return 0
+    fi
+
+    if [[ ! -f "$LLAMA_SWAP_CONFIG" ]]; then
+        warn "llama-swap config not found. Run: ai2 setup"
+        return 1
+    fi
+
+    info "Adding profile '$profile' to $LLAMA_SWAP_CONFIG..."
+
+    if [[ "$tier" == "smart" ]]; then
+        # Ensure froggeric template is present
+        ensure_froggeric_template
+        smart_profile_yaml >> "$LLAMA_SWAP_CONFIG"
+    else
+        gemma_profile_yaml "$profile" "${TIER_HF[$tier]}" "${TIER_CTX[$tier]}" \
+            >> "$LLAMA_SWAP_CONFIG"
+    fi
+
+    ok "Profile '$profile' added."
+}
+
+ensure_froggeric_template() {
+    if [[ ! -f "$FROGGERIC_TEMPLATE" ]]; then
+        info "Downloading Qwen froggeric chat template..."
+        mkdir -p "$LLAMA_SWAP_CONFIG_DIR"
+        curl -L --progress-bar -o "$FROGGERIC_TEMPLATE" "$FROGGERIC_URL" \
+            && ok "Template saved to $FROGGERIC_TEMPLATE" \
+            || warn "Template download failed. Smart tier may not suppress thinking."
+    fi
+}
+
+# --- start llama-swap --------------------------------------------------------
+cmd_start() {
+    if [[ ! -f "$LLAMA_SWAP_CONFIG" ]]; then
+        err "No config at $LLAMA_SWAP_CONFIG. Run: ai2 setup"
+        return 1
+    fi
+
+    # Stop any stale instance
+    if [[ -f "$PID_FILE" ]]; then
+        local old_pid
+        old_pid=$(cat "$PID_FILE")
+        if kill -0 "$old_pid" 2>/dev/null; then
+            info "llama-swap already running (PID $old_pid)."
+            return 0
+        fi
+        rm -f "$PID_FILE"
+    fi
+
+    mkdir -p "$AI2_CONFIG_DIR"
+    local log_file="${AI2_CONFIG_DIR}/llama-swap.log"
+    nohup llama-swap \
+        --config "$LLAMA_SWAP_CONFIG" \
+        --listen "localhost:8080" \
+        > "$log_file" 2>&1 &
+    local pid=$!
+    echo "$pid" > "$PID_FILE"
+    ok "llama-swap started (PID $pid). Log: $log_file"
+}
+
+# --- status ------------------------------------------------------------------
+cmd_status() {
+    step "ai2-setup status"
+
+    printf "  llama-server: "
+    command -v llama-server &>/dev/null \
+        && printf "${GREEN}%s${RESET}\n" "$(command -v llama-server)" \
+        || printf "${RED}not found${RESET}\n"
+
+    printf "  llama-swap:   "
+    command -v llama-swap &>/dev/null \
+        && printf "${GREEN}%s${RESET}\n" "$(command -v llama-swap)" \
+        || printf "${RED}not found${RESET}\n"
+
+    printf "  jq:           "
+    command -v jq &>/dev/null \
+        && printf "${GREEN}%s${RESET}\n" "$(command -v jq)" \
+        || printf "${RED}not found${RESET}\n"
+
+    printf "  Config:       "
+    [[ -f "$LLAMA_SWAP_CONFIG" ]] \
+        && printf "${GREEN}%s${RESET}\n" "$LLAMA_SWAP_CONFIG" \
+        || printf "${RED}not found${RESET}\n"
+
+    printf "  PID file:     "
+    if [[ -f "$PID_FILE" ]]; then
+        local pid
+        pid=$(cat "$PID_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            printf "${GREEN}running (PID %s)${RESET}\n" "$pid"
+        else
+            printf "${YELLOW}stale (PID %s not running)${RESET}\n" "$pid"
+        fi
+    else
+        printf "none\n"
+    fi
+}
+
+# --- setup wizard ------------------------------------------------------------
+cmd_wizard() {
+    printf "\n${BOLD}Welcome to ai2 setup${RESET}\n"
+    printf "This wizard installs and configures the local LLM stack.\n\n"
+
+    # Step 1: install tools
+    step "Step 1/4: Installing tools"
+    cmd_install || { err "Installation failed. Aborting."; return 1; }
+
+    # Step 2: llama-swap config
+    step "Step 2/4: Configuring llama-swap"
+    mkdir -p "$LLAMA_SWAP_CONFIG_DIR"
+
+    if [[ -f "$LLAMA_SWAP_CONFIG" ]]; then
+        ok "Existing config found at $LLAMA_SWAP_CONFIG"
+        info "Appending any missing ai2 profiles..."
+        for tier in light balanced "balanced+" smart; do
+            cmd_ensure_profile "$tier"
+        done
+    else
+        info "No existing config — creating one."
+
+        local llama_bin
+        llama_bin=$(command -v llama-server 2>/dev/null || echo "/opt/homebrew/bin/llama-server")
+        printf "llama-server binary path [%s]: " "$llama_bin"
+        read -r input_bin
+        [[ -n "$input_bin" ]] && llama_bin="$input_bin"
+
+        # Step 3: choose default tier
+        step "Step 3/4: Choose default model tier"
+        printf "  [1] light      (%s)  — fast, small\n"         "${TIER_RAM[light]}"
+        printf "  [2] balanced   (%s)  — good balance\n"        "${TIER_RAM[balanced]}"
+        printf "  [3] balanced+  (%s) — high quality\n"         "${TIER_RAM[balanced+]}"
+        printf "  [4] smart      (%s) — maximum quality\n\n"    "${TIER_RAM[smart]}"
+        printf "Choice [4]: "
+        read -r choice
+        local default_tier
+        case "$choice" in
+            1) default_tier="light" ;;
+            2) default_tier="balanced" ;;
+            3) default_tier="balanced+" ;;
+            *) default_tier="smart" ;;
+        esac
+        ok "Default tier: $default_tier"
+
+        ensure_froggeric_template
+
+        generate_fresh_config "$llama_bin" "$default_tier" > "$LLAMA_SWAP_CONFIG"
+        ok "Config written to $LLAMA_SWAP_CONFIG"
+    fi
+
+    # Step 4: write ai2 config
+    step "Step 4/4: Writing ai2 config"
+    # Read existing tier if config already exists
+    local current_tier="smart"
+    [[ -f "$AI2_CONFIG" ]] && source "$AI2_CONFIG" && current_tier="$MODEL_TIER"
+
+    printf "  [1] light\n  [2] balanced\n  [3] balanced+\n  [4] smart\n"
+    printf "Default tier [current: %s]: " "$current_tier"
+    read -r t_choice
+    local chosen_tier
+    case "$t_choice" in
+        1) chosen_tier="light" ;;
+        2) chosen_tier="balanced" ;;
+        3) chosen_tier="balanced+" ;;
+        4) chosen_tier="smart" ;;
+        *) chosen_tier="$current_tier" ;;
+    esac
+
+    mkdir -p "$AI2_CONFIG_DIR"
+    printf 'MODEL_TIER=%s\nENDPOINT=http://localhost:8080\n' "$chosen_tier" > "$AI2_CONFIG"
+    ok "ai2 config written: $AI2_CONFIG"
+
+    # Offer to start llama-swap
+    printf "\nStart llama-swap now? [Y/n]: "
+    read -r start_now
+    if [[ "$start_now" != "n" && "$start_now" != "N" ]]; then
+        cmd_start
+    fi
+
+    printf "\n${GREEN}${BOLD}Setup complete!${RESET}\n"
+    printf "  ai2 status          — verify everything is running\n"
+    printf "  ai2 \"hello world\"   — test a query\n"
+    printf "  ai2 light           — switch to a lighter model\n\n"
+}
+
+# --- dispatch ----------------------------------------------------------------
+case "${1:-wizard}" in
+    wizard)          cmd_wizard ;;
+    install)         cmd_install ;;
+    ensure-profile)  cmd_ensure_profile "$2" ;;
+    start)           cmd_start ;;
+    status)          cmd_status ;;
+    *)
+        echo "Usage: ai2-setup {wizard|install|ensure-profile <tier>|start|status}" >&2
+        exit 1
+        ;;
+esac
