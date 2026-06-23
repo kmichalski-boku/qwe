@@ -36,11 +36,32 @@ tier_ram() {
     esac
 }
 
+tier_hf() {
+    case "$1" in
+        light)      echo "google/gemma-4-E4B-it-qat-q4_0-gguf" ;;
+        balanced)   echo "google/gemma-4-12B-it-qat-q4_0-gguf" ;;
+        balanced+)  echo "unsloth/gemma-4-12b-it-GGUF:UD-Q8_K_XL" ;;
+        smart)      echo "unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q6_K_XL" ;;
+        *)          echo "" ;;
+    esac
+}
+
 is_valid_tier() {
     case "$1" in
         light|balanced|balanced+|smart) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# Returns 0 if the model's .gguf file is already in the HuggingFace hub cache
+model_is_cached() {
+    local tier="$1" hf_repo repo cache_dir cache_name
+    hf_repo=$(tier_hf "$tier")
+    repo="${hf_repo%%:*}"    # strip :UD-Q8_K_XL etc.
+    cache_dir="${HF_HOME:-${HOME}/.cache/huggingface}/hub"
+    cache_name="models--${repo/\//--}"   # org/repo → models--org--repo
+    [[ -d "${cache_dir}/${cache_name}" ]] && \
+        find -L "${cache_dir}/${cache_name}" -name "*.gguf" -size +100k 2>/dev/null | grep -q .
 }
 
 SYSTEM_PROMPT_BASE="You are a CLI-based assistant for short questions about CLI syntax, bash, and programming languages (javascript, python, html, etc). Be concise and show a short example where it helps."
@@ -127,6 +148,35 @@ spinner() {
         printf "\r${CYAN}%s${RESET} %s..." "${frames:$((i % ${#frames})):1}" "$label" >&2
         sleep 0.08
         ((i++))
+    done
+    printf "\r\e[K" >&2
+}
+
+# State-aware spinner: polls /running every ~2s and updates label to reflect
+# whether the model is downloading (first run), loading from disk, or generating.
+smart_spinner() {
+    local pid=$1 profile="$2" cached="$3"
+    local frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' i=0 label="Working" start=$SECONDS
+    while kill -0 "$pid" 2>/dev/null; do
+        if (( i % 25 == 0 )); then
+            local state elapsed
+            state=$(curl -sf -m 1 "$ENDPOINT/running" \
+                | jq -r ".running[] | select(.model==\"$profile\") | .state" 2>/dev/null)
+            elapsed=$(( SECONDS - start ))
+            case "$state" in
+                starting)
+                    if [[ "$cached" == "false" ]] || (( elapsed > 60 )); then
+                        label="Downloading model (first run, may take a few minutes)"
+                    else
+                        label="Loading model into memory"
+                    fi
+                    ;;
+                ready) label="Generating response" ;;
+            esac
+        fi
+        printf "\r${CYAN}%s${RESET} %s..." "${frames:$((i % ${#frames})):1}" "$label" >&2
+        sleep 0.08
+        (( i++ ))
     done
     printf "\r\e[K" >&2
 }
@@ -248,7 +298,8 @@ cmd_switch() {
 
     # Eager hot-swap: trigger model load now via a 1-token request
     if curl -sf -m 2 -o /dev/null "$ENDPOINT/v1/models"; then
-        printf "Triggering model load (first run may download the model)...\n"
+        local cached="false"
+        model_is_cached "$tier" && cached="true"
         local swap_body
         swap_body=$(jq -n --arg m "$profile" '{
           model: $m,
@@ -260,7 +311,7 @@ cmd_switch() {
         curl -s --max-time 600 "$ENDPOINT/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -d "$swap_body" > "$tmp" &
-        spinner $! "Loading"
+        smart_spinner $! "$profile" "$cached"
         wait $!
         if jq -e '.choices[0].message.content' "$tmp" &>/dev/null 2>&1; then
             echo "Model ready."
@@ -338,12 +389,15 @@ cmd_query() {
       max_tokens: 1024
     }')
 
+    local cached="false"
+    model_is_cached "$MODEL_TIER" && cached="true"
+
     local RESPONSE
     RESPONSE=$(mktemp)
     curl -s --max-time 300 "$ENDPOINT/v1/chat/completions" \
         -H "Content-Type: application/json" \
         -d "$BODY" > "$RESPONSE" &
-    spinner $! "Working"
+    smart_spinner $! "$profile" "$cached"
     wait $!
 
     jq -r '
