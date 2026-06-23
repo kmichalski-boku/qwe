@@ -354,6 +354,24 @@ cmd_query() {
     rm -f "$RESPONSE"
 }
 
+# --- help --------------------------------------------------------------------
+cmd_help() {
+    printf "${BOLD}ai2${RESET} — quick local-LLM Q&A\n\n"
+    printf "${BOLD}Usage:${RESET}\n"
+    printf "  ai2 [question]         Ask a question (interactive prompt if omitted)\n"
+    printf "  ai2 light              Switch to light model  (~3 GB RAM, Gemma 4E4B)\n"
+    printf "  ai2 balanced           Switch to balanced     (~8 GB RAM, Gemma 4-12B)\n"
+    printf "  ai2 balanced+          Switch to balanced+    (~14 GB RAM, Gemma 4-12B Q8)\n"
+    printf "  ai2 smart              Switch to smart        (~28 GB RAM, Qwen3.6-35B Q6)\n"
+    printf "  ai2 setup              Run the interactive setup wizard\n"
+    printf "  ai2 status             Show current tier, endpoint, and server state\n"
+    printf "  ai2 --help             Show this help\n\n"
+    printf "${BOLD}Model tiers:${RESET}\n"
+    printf "  Switching tiers persists the choice and hot-loads the model immediately.\n"
+    printf "  The active tier is stored in ~/.config/ai2/config.\n\n"
+    printf "${BOLD}First time?${RESET}  Run: ai2 setup\n"
+}
+
 # --- dispatch ----------------------------------------------------------------
 case "$1" in
     light|balanced|"balanced+"|smart)
@@ -369,6 +387,9 @@ case "$1" in
         ;;
     status)
         cmd_status
+        ;;
+    --help|-h|help)
+        cmd_help
         ;;
     "")
         cmd_query
