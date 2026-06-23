@@ -16,27 +16,53 @@ PID_FILE="${AI2_CONFIG_DIR}/llama-swap.pid"
 FROGGERIC_TEMPLATE="${LLAMA_SWAP_CONFIG_DIR}/qwen3.6-froggeric.jinja"
 FROGGERIC_URL="https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates/resolve/main/qwen3.6/chat_template.jinja"
 
-# Model tier definitions (kept in sync with ai2)
-declare -A TIER_PROFILE TIER_HF TIER_RAM TIER_CTX
-TIER_PROFILE[light]="ai2-light"
-TIER_PROFILE[balanced]="ai2-balanced"
-TIER_PROFILE[balanced+]="ai2-balanced-plus"
-TIER_PROFILE[smart]="ai2-smart"
+# Model tier lookup helpers (bash 3.2 compatible, kept in sync with ai2)
+tier_profile() {
+    case "$1" in
+        light)      echo "ai2-light" ;;
+        balanced)   echo "ai2-balanced" ;;
+        balanced+)  echo "ai2-balanced-plus" ;;
+        smart)      echo "ai2-smart" ;;
+        *)          echo "" ;;
+    esac
+}
 
-TIER_HF[light]="google/gemma-4-E4B-it-qat-q4_0-gguf"
-TIER_HF[balanced]="google/gemma-4-12B-it-qat-q4_0-gguf"
-TIER_HF[balanced+]="unsloth/gemma-4-12b-it-GGUF:UD-Q8_K_XL"
-TIER_HF[smart]="unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q6_K"
+tier_hf() {
+    case "$1" in
+        light)      echo "google/gemma-4-E4B-it-qat-q4_0-gguf" ;;
+        balanced)   echo "google/gemma-4-12B-it-qat-q4_0-gguf" ;;
+        balanced+)  echo "unsloth/gemma-4-12b-it-GGUF:UD-Q8_K_XL" ;;
+        smart)      echo "unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q6_K" ;;
+        *)          echo "" ;;
+    esac
+}
 
-TIER_RAM[light]="~3 GB"
-TIER_RAM[balanced]="~8 GB"
-TIER_RAM[balanced+]="~14 GB"
-TIER_RAM[smart]="~28 GB"
+tier_ram() {
+    case "$1" in
+        light)      echo "~3 GB" ;;
+        balanced)   echo "~8 GB" ;;
+        balanced+)  echo "~14 GB" ;;
+        smart)      echo "~28 GB" ;;
+        *)          echo "?" ;;
+    esac
+}
 
-TIER_CTX[light]="16384"
-TIER_CTX[balanced]="16384"
-TIER_CTX[balanced+]="32768"
-TIER_CTX[smart]="16384"
+tier_ctx() {
+    case "$1" in
+        light)      echo "16384" ;;
+        balanced)   echo "16384" ;;
+        balanced+)  echo "32768" ;;
+        smart)      echo "16384" ;;
+        *)          echo "16384" ;;
+    esac
+}
+
+is_valid_tier() {
+    case "$1" in
+        light|balanced|balanced+|smart) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 BOLD=$'\e[1m'
 RESET=$'\e[0m'
@@ -283,9 +309,9 @@ macros:
 
 models:
 YAML
-    gemma_profile_yaml "ai2-light"         "${TIER_HF[light]}"     "${TIER_CTX[light]}"
-    gemma_profile_yaml "ai2-balanced"      "${TIER_HF[balanced]}"  "${TIER_CTX[balanced]}"
-    gemma_profile_yaml "ai2-balanced-plus" "${TIER_HF[balanced+]}" "${TIER_CTX[balanced+]}"
+    gemma_profile_yaml "ai2-light"         "$(tier_hf light)"     "$(tier_ctx light)"
+    gemma_profile_yaml "ai2-balanced"      "$(tier_hf balanced)"  "$(tier_ctx balanced)"
+    gemma_profile_yaml "ai2-balanced-plus" "$(tier_hf balanced+)" "$(tier_ctx balanced+)"
     smart_profile_yaml
     cat <<YAML
 
@@ -300,12 +326,13 @@ YAML
 
 cmd_ensure_profile() {
     local tier="$1"
-    if [[ -z "${TIER_PROFILE[$tier]}" ]]; then
+    if ! is_valid_tier "$tier"; then
         err "Unknown tier: $tier"
         return 1
     fi
 
-    local profile="${TIER_PROFILE[$tier]}"
+    local profile
+    profile=$(tier_profile "$tier")
 
     if profile_exists "$profile"; then
         return 0
@@ -318,16 +345,38 @@ cmd_ensure_profile() {
 
     info "Adding profile '$profile' to $LLAMA_SWAP_CONFIG..."
 
+    local profile_yaml
     if [[ "$tier" == "smart" ]]; then
-        # Ensure froggeric template is present
         ensure_froggeric_template
-        smart_profile_yaml >> "$LLAMA_SWAP_CONFIG"
+        profile_yaml=$(smart_profile_yaml)
     else
-        gemma_profile_yaml "$profile" "${TIER_HF[$tier]}" "${TIER_CTX[$tier]}" \
-            >> "$LLAMA_SWAP_CONFIG"
+        profile_yaml=$(gemma_profile_yaml "$profile" "$(tier_hf "$tier")" "$(tier_ctx "$tier")")
+    fi
+
+    # Insert inside the models: section — before startPort:/hooks:/groups: (top-level keys)
+    local insert_line
+    insert_line=$(grep -n '^startPort:\|^hooks:\|^groups:' "$LLAMA_SWAP_CONFIG" \
+        | head -1 | cut -d: -f1)
+
+    if [[ -n "$insert_line" ]]; then
+        local tmp
+        tmp=$(mktemp)
+        head -n $((insert_line - 1)) "$LLAMA_SWAP_CONFIG" > "$tmp"
+        printf '%s\n' "$profile_yaml" >> "$tmp"
+        tail -n +"$insert_line" "$LLAMA_SWAP_CONFIG" >> "$tmp"
+        mv "$tmp" "$LLAMA_SWAP_CONFIG"
+    else
+        printf '%s\n' "$profile_yaml" >> "$LLAMA_SWAP_CONFIG"
     fi
 
     ok "Profile '$profile' added."
+
+    # Signal llama-swap to reload its config (SIGHUP triggers hot reload)
+    local swap_pid
+    swap_pid=$(pgrep -f "llama-swap --config" 2>/dev/null | head -1)
+    if [[ -n "$swap_pid" ]]; then
+        kill -HUP "$swap_pid" 2>/dev/null && sleep 1
+    fi
 }
 
 ensure_froggeric_template() {
@@ -423,7 +472,7 @@ cmd_wizard() {
     if [[ -f "$LLAMA_SWAP_CONFIG" ]]; then
         ok "Existing config found at $LLAMA_SWAP_CONFIG"
         info "Appending any missing ai2 profiles..."
-        for tier in light balanced "balanced+" smart; do
+        for tier in light balanced balanced+ smart; do
             cmd_ensure_profile "$tier"
         done
     else
@@ -437,10 +486,10 @@ cmd_wizard() {
 
         # Step 3: choose default tier
         step "Step 3/4: Choose default model tier"
-        printf "  [1] light      (%s)  — fast, small\n"         "${TIER_RAM[light]}"
-        printf "  [2] balanced   (%s)  — good balance\n"        "${TIER_RAM[balanced]}"
-        printf "  [3] balanced+  (%s) — high quality\n"         "${TIER_RAM[balanced+]}"
-        printf "  [4] smart      (%s) — maximum quality\n\n"    "${TIER_RAM[smart]}"
+        printf "  [1] light      (%s)  — fast, small\n"         "$(tier_ram light)"
+        printf "  [2] balanced   (%s)  — good balance\n"        "$(tier_ram balanced)"
+        printf "  [3] balanced+  (%s) — high quality\n"         "$(tier_ram balanced+)"
+        printf "  [4] smart      (%s) — maximum quality\n\n"    "$(tier_ram smart)"
         printf "Choice [4]: "
         read -r choice
         local default_tier

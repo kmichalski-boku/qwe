@@ -15,17 +15,33 @@ LLAMA_SWAP_CONFIG="${HOME}/.config/llama-swap/config.yaml"
 MODEL_TIER="smart"
 ENDPOINT="http://localhost:8080"
 
-# --- Model tier definitions --------------------------------------------------
-declare -A TIER_PROFILE TIER_RAM
-TIER_PROFILE[light]="ai2-light"
-TIER_PROFILE[balanced]="ai2-balanced"
-TIER_PROFILE[balanced+]="ai2-balanced-plus"
-TIER_PROFILE[smart]="ai2-smart"
+# --- Model tier lookup helpers (bash 3.2 compatible) -------------------------
+tier_profile() {
+    case "$1" in
+        light)      echo "ai2-light" ;;
+        balanced)   echo "ai2-balanced" ;;
+        balanced+)  echo "ai2-balanced-plus" ;;
+        smart)      echo "ai2-smart" ;;
+        *)          echo "" ;;
+    esac
+}
 
-TIER_RAM[light]="~3 GB"
-TIER_RAM[balanced]="~8 GB"
-TIER_RAM[balanced+]="~14 GB"
-TIER_RAM[smart]="~28 GB"
+tier_ram() {
+    case "$1" in
+        light)      echo "~3 GB" ;;
+        balanced)   echo "~8 GB" ;;
+        balanced+)  echo "~14 GB" ;;
+        smart)      echo "~28 GB" ;;
+        *)          echo "?" ;;
+    esac
+}
+
+is_valid_tier() {
+    case "$1" in
+        light|balanced|balanced+|smart) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 SYSTEM_PROMPT_BASE="You are a CLI-based assistant for short questions about CLI syntax, bash, and programming languages (javascript, python, html, etc). Be concise and show a short example where it helps."
 
@@ -206,7 +222,7 @@ check_tools() {
 # --- model tier switch -------------------------------------------------------
 cmd_switch() {
     local tier="$1"
-    if [[ -z "${TIER_PROFILE[$tier]}" ]]; then
+    if ! is_valid_tier "$tier"; then
         echo "Unknown tier '$tier'. Valid: light  balanced  balanced+  smart" >&2
         return 1
     fi
@@ -224,9 +240,11 @@ cmd_switch() {
         ai2-setup ensure-profile "$tier"
     fi
 
-    local profile="${TIER_PROFILE[$tier]}"
+    local profile ram
+    profile=$(tier_profile "$tier")
+    ram=$(tier_ram "$tier")
     printf "${BOLD}Switched to:${RESET} %s  (profile: %s,  RAM: %s)\n" \
-        "$tier" "$profile" "${TIER_RAM[$tier]}"
+        "$tier" "$profile" "$ram"
 
     # Eager hot-swap: trigger model load now via a 1-token request
     if curl -sf -m 2 -o /dev/null "$ENDPOINT/v1/models"; then
@@ -244,7 +262,7 @@ cmd_switch() {
             -d "$swap_body" > "$tmp" &
         spinner $! "Loading"
         wait $!
-        if jq -e '.choices[0]' "$tmp" &>/dev/null 2>&1; then
+        if jq -e '.choices[0].message.content' "$tmp" &>/dev/null 2>&1; then
             echo "Model ready."
         else
             echo "Load request sent — model may still be initializing."
@@ -258,11 +276,14 @@ cmd_switch() {
 # --- status ------------------------------------------------------------------
 cmd_status() {
     load_config
-    local profile="${TIER_PROFILE[$MODEL_TIER]:-unknown}"
+    local profile ram
+    profile=$(tier_profile "$MODEL_TIER")
+    ram=$(tier_ram "$MODEL_TIER")
+    [[ -z "$profile" ]] && profile="unknown"
     printf "${BOLD}ai2 status${RESET}\n"
     printf "  Config:    %s\n" "$AI2_CONFIG"
     printf "  Tier:      %s  (profile: %s,  RAM: %s)\n" \
-        "$MODEL_TIER" "$profile" "${TIER_RAM[$MODEL_TIER]:-?}"
+        "$MODEL_TIER" "$profile" "$ram"
     printf "  Endpoint:  %s\n" "$ENDPOINT"
     printf "  Server:    "
     if curl -sf -m 2 -o /dev/null "$ENDPOINT/v1/models"; then
@@ -287,7 +308,8 @@ cmd_query() {
     check_tools || exit 1
     ensure_server || exit 1
 
-    local profile="${TIER_PROFILE[$MODEL_TIER]}"
+    local profile
+    profile=$(tier_profile "$MODEL_TIER")
     local system_prompt="$SYSTEM_PROMPT_BASE"
     # Qwen needs <|think_off|> via the froggeric template; Gemma disables thinking server-side
     [[ "$MODEL_TIER" == "smart" ]] && system_prompt+=" <|think_off|>"
@@ -324,8 +346,11 @@ cmd_query() {
     spinner $! "Working"
     wait $!
 
-    jq -r '.choices[0].message.content // .error.message // "No response from server."' \
-        < "$RESPONSE" | render_md
+    jq -r '
+      .choices[0].message.content //
+      (try .error.message catch .error) //
+      "No response from server."
+    ' < "$RESPONSE" | render_md
     rm -f "$RESPONSE"
 }
 
