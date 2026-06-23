@@ -174,7 +174,7 @@ smart_spinner() {
                 ready) label="Generating response" ;;
             esac
         fi
-        printf "\r${CYAN}%s${RESET} %s..." "${frames:$((i % ${#frames})):1}" "$label" >&2
+        printf "\r\e[K${CYAN}%s${RESET} %s..." "${frames:$((i % ${#frames})):1}" "$label" >&2
         sleep 0.08
         (( i++ ))
     done
