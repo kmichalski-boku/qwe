@@ -83,6 +83,14 @@ install_with_brew() {
     fi
 }
 
+install_llama_swap_brew() {
+    command -v brew &>/dev/null || return 1
+    info "Tapping mostlygeek/llama-swap..."
+    brew tap mostlygeek/llama-swap
+    info "Installing llama-swap via Homebrew..."
+    brew install llama-swap
+}
+
 download_llama_server_linux() {
     local arch
     arch=$(detect_arch)
@@ -204,13 +212,13 @@ install_dependencies() {
     else
         case "$os" in
             macos)
-                install_with_brew llama-swap \
+                install_llama_swap_brew \
                     || download_llama_swap_binary \
                     || { err "Could not install llama-swap."; return 1; }
                 ;;
             linux)
                 if command -v brew &>/dev/null; then
-                    install_with_brew llama-swap || download_llama_swap_binary
+                    install_llama_swap_brew || download_llama_swap_binary
                 else
                     download_llama_swap_binary
                 fi
