@@ -18,15 +18,34 @@ ok()      { printf "${GREEN}✓${RESET} %s\n" "$*"; }
 warn()    { printf "${YELLOW}!${RESET} %s\n" "$*"; }
 err()     { printf "${RED}✗${RESET} %s\n" "$*"; }
 
+FORCE_MODE=""
+for arg in "$@"; do
+    case "$arg" in
+        --force) FORCE_MODE=1 ;;
+        *)
+            printf "Unknown option: %s\n" "$arg" >&2
+            printf "Usage: %s [--force]\n" "$0" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# In force mode auto-answers yes; otherwise prompts interactively.
 ask() {
     local prompt="$1"
+    if [[ -n "$FORCE_MODE" ]]; then
+        printf "%s → yes (--force)\n" "$prompt"
+        return 0
+    fi
     printf "%s [y/N]: " "$prompt"
     read -r answer
     [[ "$answer" =~ ^[Yy]$ ]]
 }
 
 echo ""
-printf "${BOLD}qwe uninstaller${RESET}\n"
+printf "${BOLD}qwe uninstaller${RESET}"
+[[ -n "$FORCE_MODE" ]] && printf "  ${YELLOW}(--force: removing all components)${RESET}"
+printf "\n"
 warn "This will remove qwe and its configuration."
 echo ""
 
@@ -107,15 +126,17 @@ if [[ -d "$LLAMA_SWAP_CONFIG_DIR" ]]; then
 fi
 
 # ── Optional: uninstall llama-swap ───────────────────────────────────────────
-if [[ "$LLAMA_SWAP_METHOD" == "system" ]]; then
+if [[ "$LLAMA_SWAP_METHOD" == "system" && -z "$FORCE_MODE" ]]; then
     info "llama-swap was pre-installed — skipping."
 elif command -v llama-swap &>/dev/null; then
     llama_swap_bin=$(command -v llama-swap)
     if ask "Uninstall llama-swap ($llama_swap_bin)?"; then
         method="$LLAMA_SWAP_METHOD"
         # Fallback: detect from binary location if state is unknown
-        if [[ -z "$method" ]]; then
-            if command -v brew &>/dev/null && brew list llama-swap &>/dev/null 2>&1; then
+        if [[ -z "$method" || "$method" == "system" ]]; then
+            if command -v brew &>/dev/null && \
+               (brew list llama-swap &>/dev/null 2>&1 || \
+                brew list mostlygeek/llama-swap/llama-swap &>/dev/null 2>&1); then
                 method="brew"
             elif [[ "$llama_swap_bin" == "${HOME}/.local/bin/"* ]]; then
                 method="git"
@@ -144,14 +165,14 @@ elif command -v llama-swap &>/dev/null; then
 fi
 
 # ── Optional: uninstall llama-server (llama.cpp) ─────────────────────────────
-if [[ "$LLAMA_SERVER_METHOD" == "system" ]]; then
+if [[ "$LLAMA_SERVER_METHOD" == "system" && -z "$FORCE_MODE" ]]; then
     info "llama-server was pre-installed — skipping."
 elif command -v llama-server &>/dev/null; then
     llama_server_bin=$(command -v llama-server)
     if ask "Uninstall llama.cpp / llama-server ($llama_server_bin)?"; then
         method="$LLAMA_SERVER_METHOD"
         # Fallback: detect from binary location if state is unknown
-        if [[ -z "$method" ]]; then
+        if [[ -z "$method" || "$method" == "system" ]]; then
             if command -v brew &>/dev/null && brew list llama.cpp &>/dev/null 2>&1; then
                 method="brew"
             elif [[ "$llama_server_bin" == "${HOME}/.local/bin/"* ]]; then
@@ -177,9 +198,9 @@ elif command -v llama-server &>/dev/null; then
 fi
 
 # ── Optional: uninstall jq ───────────────────────────────────────────────────
-if [[ "$JQ_METHOD" == "system" ]]; then
+if [[ "$JQ_METHOD" == "system" && -z "$FORCE_MODE" ]]; then
     info "jq was pre-installed — skipping."
-elif [[ "$JQ_METHOD" == "brew" || "$JQ_METHOD" == "apt" ]] && command -v jq &>/dev/null; then
+elif command -v jq &>/dev/null && [[ "$JQ_METHOD" == "brew" || "$JQ_METHOD" == "apt" || -n "$FORCE_MODE" ]]; then
     jq_bin=$(command -v jq)
     if ask "Uninstall jq ($jq_bin)?"; then
         case "$JQ_METHOD" in

@@ -94,6 +94,21 @@ detect_arch() {
     esac
 }
 
+# Returns 0 only when the named binary is in PATH AND is a real executable
+# (not a tarball or other non-binary saved with chmod +x from a broken install).
+# Checks ELF (Linux), Mach-O arm64/x86_64, and fat/universal macOS magic bytes.
+is_real_binary() {
+    local path
+    path=$(command -v "$1" 2>/dev/null) || return 1
+    [[ -x "$path" ]] || return 1
+    local magic
+    magic=$(head -c 4 "$path" 2>/dev/null | od -A n -t x1 | tr -d ' \n')
+    case "$magic" in
+        7f454c46*|cffaedfe*|cefaedfe*|cafebabe*|feedfacf*|feedface*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # --- install helpers -----------------------------------------------------------
 install_with_brew() {
     local pkg="$1"
@@ -211,10 +226,12 @@ install_dependencies() {
 
     # ── llama-server ──────────────────────────────────────────────────────────
     step "Installing llama-server (llama.cpp)"
-    if command -v llama-server &>/dev/null; then
+    if is_real_binary llama-server; then
         ok "llama-server already installed: $(command -v llama-server)"
         LLAMA_SERVER_METHOD="system"
     else
+        command -v llama-server &>/dev/null && \
+            warn "Found non-executable file at $(command -v llama-server) — reinstalling."
         case "$os" in
             macos)
                 if [[ "$FORCE_METHOD" == "git" ]]; then
@@ -254,10 +271,12 @@ install_dependencies() {
 
     # ── llama-swap ────────────────────────────────────────────────────────────
     step "Installing llama-swap"
-    if command -v llama-swap &>/dev/null; then
+    if is_real_binary llama-swap; then
         ok "llama-swap already installed: $(command -v llama-swap)"
         LLAMA_SWAP_METHOD="system"
     else
+        command -v llama-swap &>/dev/null && \
+            warn "Found non-executable file at $(command -v llama-swap) — reinstalling."
         case "$FORCE_METHOD" in
             brew)
                 install_llama_swap_brew || { err "Homebrew install failed."; return 1; }
@@ -285,15 +304,17 @@ install_dependencies() {
                 fi
                 ;;
         esac
-        command -v llama-swap &>/dev/null && ok "llama-swap installed."
+        is_real_binary llama-swap && ok "llama-swap installed."
     fi
 
     # ── jq ────────────────────────────────────────────────────────────────────
     step "Installing jq"
-    if command -v jq &>/dev/null; then
+    if is_real_binary jq; then
         ok "jq already installed."
         JQ_METHOD="system"
     else
+        command -v jq &>/dev/null && \
+            warn "Found non-executable file at $(command -v jq) — reinstalling."
         case "$os" in
             macos)
                 install_with_brew jq && JQ_METHOD="brew"
