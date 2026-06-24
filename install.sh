@@ -1,8 +1,28 @@
 #!/bin/bash
 # install.sh — install qwe to ~/.local/bin, install dependencies, and configure
+#
+# Options:
+#   --force-brew   Force Homebrew for all components (where available)
+#   --force-git    Force GitHub binary download for all components
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${HOME}/.local/bin"
+QWE_CONFIG_DIR="${HOME}/.config/qwe"
+INSTALL_STATE_FILE="${QWE_CONFIG_DIR}/install-state"
+
+FORCE_METHOD=""  # brew | git | "" (auto)
+
+for arg in "$@"; do
+    case "$arg" in
+        --force-brew) FORCE_METHOD="brew" ;;
+        --force-git)  FORCE_METHOD="git"  ;;
+        *)
+            printf "Unknown option: %s\n" "$arg" >&2
+            printf "Usage: %s [--force-brew|--force-git]\n" "$0" >&2
+            exit 1
+            ;;
+    esac
+done
 
 BOLD=$'\e[1m'
 GREEN=$'\e[32m'
@@ -18,7 +38,9 @@ err()   { printf "${RED}✗${RESET} %s\n" "$*" >&2; }
 step()  { printf "\n${BOLD}%s${RESET}\n" "$*"; }
 
 echo ""
-printf "${BOLD}qwe installer${RESET}\n\n"
+printf "${BOLD}qwe installer${RESET}"
+[[ -n "$FORCE_METHOD" ]] && printf "  ${CYAN}(forcing: %s)${RESET}" "$FORCE_METHOD"
+printf "\n\n"
 
 # 1. Create ~/.local/bin if needed
 mkdir -p "$INSTALL_DIR"
@@ -75,20 +97,19 @@ detect_arch() {
 # --- install helpers -----------------------------------------------------------
 install_with_brew() {
     local pkg="$1"
-    if command -v brew &>/dev/null; then
-        info "Installing $pkg via Homebrew..."
-        brew install "$pkg"
-    else
-        return 1
-    fi
+    command -v brew &>/dev/null || return 1
+    info "Installing $pkg via Homebrew..."
+    brew install "$pkg"
 }
 
 install_llama_swap_brew() {
     command -v brew &>/dev/null || return 1
     info "Tapping mostlygeek/llama-swap..."
     brew tap mostlygeek/llama-swap
+    # Homebrew 4.4+ requires explicit trust for third-party taps
+    brew trust mostlygeek/llama-swap 2>/dev/null || true
     info "Installing llama-swap via Homebrew..."
-    brew install llama-swap
+    brew install mostlygeek/llama-swap/llama-swap
 }
 
 download_llama_server_linux() {
@@ -179,25 +200,50 @@ download_llama_swap_binary() {
 }
 
 # --- install dependencies ------------------------------------------------------
+# Populated by install_dependencies(); written to INSTALL_STATE_FILE afterwards.
+LLAMA_SERVER_METHOD=""
+LLAMA_SWAP_METHOD=""
+JQ_METHOD=""
+
 install_dependencies() {
     local os
     os=$(detect_os)
 
+    # ── llama-server ──────────────────────────────────────────────────────────
     step "Installing llama-server (llama.cpp)"
     if command -v llama-server &>/dev/null; then
         ok "llama-server already installed: $(command -v llama-server)"
+        LLAMA_SERVER_METHOD="system"
     else
         case "$os" in
             macos)
+                if [[ "$FORCE_METHOD" == "git" ]]; then
+                    warn "Binary download not supported for macOS llama-server; using Homebrew."
+                fi
                 install_with_brew llama.cpp || { err "Homebrew install failed."; return 1; }
                 ok "llama-server installed."
+                LLAMA_SERVER_METHOD="brew"
                 ;;
             linux)
-                if command -v brew &>/dev/null; then
-                    install_with_brew llama.cpp || download_llama_server_linux
-                else
-                    download_llama_server_linux
-                fi
+                case "$FORCE_METHOD" in
+                    git)
+                        download_llama_server_linux || return 1
+                        LLAMA_SERVER_METHOD="git"
+                        ;;
+                    brew)
+                        install_with_brew llama.cpp || { err "Homebrew install failed."; return 1; }
+                        LLAMA_SERVER_METHOD="brew"
+                        ;;
+                    *)
+                        if command -v brew &>/dev/null && install_with_brew llama.cpp; then
+                            LLAMA_SERVER_METHOD="brew"
+                        elif download_llama_server_linux; then
+                            LLAMA_SERVER_METHOD="git"
+                        else
+                            return 1
+                        fi
+                        ;;
+                esac
                 ;;
             *)
                 err "Unsupported OS. Install llama.cpp manually."
@@ -206,38 +252,57 @@ install_dependencies() {
         esac
     fi
 
+    # ── llama-swap ────────────────────────────────────────────────────────────
     step "Installing llama-swap"
     if command -v llama-swap &>/dev/null; then
         ok "llama-swap already installed: $(command -v llama-swap)"
+        LLAMA_SWAP_METHOD="system"
     else
-        case "$os" in
-            macos)
-                install_llama_swap_brew \
-                    || download_llama_swap_binary \
-                    || { err "Could not install llama-swap."; return 1; }
+        case "$FORCE_METHOD" in
+            brew)
+                install_llama_swap_brew || { err "Homebrew install failed."; return 1; }
+                LLAMA_SWAP_METHOD="brew"
                 ;;
-            linux)
-                if command -v brew &>/dev/null; then
-                    install_llama_swap_brew || download_llama_swap_binary
+            git)
+                download_llama_swap_binary || return 1
+                LLAMA_SWAP_METHOD="git"
+                ;;
+            *)
+                # auto: brew preferred, git as fallback
+                local brew_ok=0
+                case "$os" in
+                    macos)         install_llama_swap_brew && brew_ok=1 ;;
+                    linux)
+                        command -v brew &>/dev/null && install_llama_swap_brew && brew_ok=1 ;;
+                esac
+                if [[ "$brew_ok" -eq 1 ]]; then
+                    LLAMA_SWAP_METHOD="brew"
+                elif download_llama_swap_binary; then
+                    LLAMA_SWAP_METHOD="git"
                 else
-                    download_llama_swap_binary
+                    err "Could not install llama-swap."
+                    return 1
                 fi
                 ;;
         esac
         command -v llama-swap &>/dev/null && ok "llama-swap installed."
     fi
 
+    # ── jq ────────────────────────────────────────────────────────────────────
     step "Installing jq"
     if command -v jq &>/dev/null; then
         ok "jq already installed."
+        JQ_METHOD="system"
     else
         case "$os" in
-            macos)  install_with_brew jq ;;
+            macos)
+                install_with_brew jq && JQ_METHOD="brew"
+                ;;
             linux)
                 if command -v apt-get &>/dev/null; then
-                    sudo apt-get install -y jq
+                    sudo apt-get install -y jq && JQ_METHOD="apt"
                 elif command -v brew &>/dev/null; then
-                    install_with_brew jq
+                    install_with_brew jq && JQ_METHOD="brew"
                 else
                     err "Could not install jq. Install it manually."
                 fi
@@ -246,11 +311,24 @@ install_dependencies() {
     fi
 }
 
+save_install_state() {
+    mkdir -p "$QWE_CONFIG_DIR"
+    cat > "$INSTALL_STATE_FILE" <<STATE
+LLAMA_SERVER_METHOD=${LLAMA_SERVER_METHOD}
+LLAMA_SWAP_METHOD=${LLAMA_SWAP_METHOD}
+JQ_METHOD=${JQ_METHOD}
+STATE
+    ok "Install state saved to $INSTALL_STATE_FILE"
+}
+
 # 4. Install dependencies
 echo ""
 install_dependencies || { err "Dependency installation failed. Aborting."; exit 1; }
 
-# 5. Run qwe-setup wizard (configure llama-swap and qwe)
+# 5. Save install state (used by uninstall.sh to know how to clean up)
+save_install_state
+
+# 6. Run qwe-setup wizard (configure llama-swap and qwe)
 echo ""
 if command -v qwe &>/dev/null || [[ -x "$INSTALL_DIR/qwe" ]]; then
     printf "${GREEN}${BOLD}Dependencies ready.${RESET} Running setup wizard...\n\n"
