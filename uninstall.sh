@@ -4,6 +4,7 @@
 INSTALL_DIR="${HOME}/.local/bin"
 QWE_CONFIG_DIR="${HOME}/.config/qwe"
 LLAMA_SWAP_CONFIG_DIR="${HOME}/.config/llama-swap"
+INSTALL_STATE_FILE="${QWE_CONFIG_DIR}/install-state"
 
 BOLD=$'\e[1m'
 GREEN=$'\e[32m'
@@ -17,17 +18,48 @@ ok()      { printf "${GREEN}✓${RESET} %s\n" "$*"; }
 warn()    { printf "${YELLOW}!${RESET} %s\n" "$*"; }
 err()     { printf "${RED}✗${RESET} %s\n" "$*"; }
 
+FORCE_MODE=""
+for arg in "$@"; do
+    case "$arg" in
+        --force) FORCE_MODE=1 ;;
+        *)
+            printf "Unknown option: %s\n" "$arg" >&2
+            printf "Usage: %s [--force]\n" "$0" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# In force mode auto-answers yes; otherwise prompts interactively.
 ask() {
     local prompt="$1"
+    if [[ -n "$FORCE_MODE" ]]; then
+        printf "%s → yes (--force)\n" "$prompt"
+        return 0
+    fi
     printf "%s [y/N]: " "$prompt"
     read -r answer
     [[ "$answer" =~ ^[Yy]$ ]]
 }
 
 echo ""
-printf "${BOLD}qwe uninstaller${RESET}\n"
+printf "${BOLD}qwe uninstaller${RESET}"
+[[ -n "$FORCE_MODE" ]] && printf "  ${YELLOW}(--force: removing all components)${RESET}"
+printf "\n"
 warn "This will remove qwe and its configuration."
 echo ""
+
+# Load install state before removing anything (state file lives in QWE_CONFIG_DIR)
+LLAMA_SERVER_METHOD=""
+LLAMA_SWAP_METHOD=""
+JQ_METHOD=""
+if [[ -f "$INSTALL_STATE_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$INSTALL_STATE_FILE"
+    info "Loaded install state: llama-server=$LLAMA_SERVER_METHOD  llama-swap=$LLAMA_SWAP_METHOD  jq=$JQ_METHOD"
+else
+    warn "No install-state file found — will use heuristic detection for cleanup."
+fi
 
 # ── 1. Stop running processes ────────────────────────────────────────────────
 info "Stopping llama-swap and llama-server..."
@@ -56,7 +88,7 @@ for f in qwe qwe-setup; do
     fi
 done
 
-# ── 3. Remove qwe config directory ──────────────────────────────────────────
+# ── 3. Remove qwe config directory (includes install-state) ──────────────────
 if [[ -d "$QWE_CONFIG_DIR" ]]; then
     rm -rf "$QWE_CONFIG_DIR"
     ok "Removed $QWE_CONFIG_DIR"
@@ -79,10 +111,11 @@ remove_from_rc "${ZDOTDIR:-$HOME}/.zshrc"
 remove_from_rc "${HOME}/.bashrc"
 remove_from_rc "${HOME}/.bash_profile"
 
-# ── Optional: llama-swap config ──────────────────────────────────────────────
+# ── Optional cleanups ─────────────────────────────────────────────────────────
 echo ""
 printf "${BOLD}Optional cleanups:${RESET}\n\n"
 
+# ── Optional: llama-swap config ──────────────────────────────────────────────
 if [[ -d "$LLAMA_SWAP_CONFIG_DIR" ]]; then
     if ask "Remove llama-swap config directory ($LLAMA_SWAP_CONFIG_DIR)?"; then
         rm -rf "$LLAMA_SWAP_CONFIG_DIR"
@@ -92,39 +125,98 @@ if [[ -d "$LLAMA_SWAP_CONFIG_DIR" ]]; then
     fi
 fi
 
-# ── Optional: uninstall llama-swap binary ────────────────────────────────────
-if command -v llama-swap &>/dev/null; then
+# ── Optional: uninstall llama-swap ───────────────────────────────────────────
+if [[ "$LLAMA_SWAP_METHOD" == "system" && -z "$FORCE_MODE" ]]; then
+    info "llama-swap was pre-installed — skipping."
+elif command -v llama-swap &>/dev/null; then
     llama_swap_bin=$(command -v llama-swap)
     if ask "Uninstall llama-swap ($llama_swap_bin)?"; then
-        if command -v brew &>/dev/null && brew list llama-swap &>/dev/null 2>&1; then
-            brew uninstall llama-swap \
-                && ok "Uninstalled llama-swap via Homebrew" \
-                || warn "Homebrew uninstall failed — remove $llama_swap_bin manually"
-        elif [[ "$llama_swap_bin" == "${HOME}/.local/bin/"* ]]; then
-            rm -f "$llama_swap_bin" && ok "Removed $llama_swap_bin"
-        else
-            warn "Cannot auto-remove $llama_swap_bin — remove it manually"
+        method="$LLAMA_SWAP_METHOD"
+        # Fallback: detect from binary location if state is unknown
+        if [[ -z "$method" || "$method" == "system" ]]; then
+            if command -v brew &>/dev/null && \
+               (brew list llama-swap &>/dev/null 2>&1 || \
+                brew list mostlygeek/llama-swap/llama-swap &>/dev/null 2>&1); then
+                method="brew"
+            elif [[ "$llama_swap_bin" == "${HOME}/.local/bin/"* ]]; then
+                method="git"
+            fi
         fi
+        case "$method" in
+            brew)
+                brew uninstall llama-swap \
+                    && ok "Uninstalled llama-swap via Homebrew" \
+                    || warn "Homebrew uninstall failed — remove $llama_swap_bin manually"
+                # Remove the tap if we added it
+                brew untap mostlygeek/llama-swap 2>/dev/null \
+                    && ok "Removed tap mostlygeek/llama-swap" \
+                    || true
+                ;;
+            git)
+                rm -f "$llama_swap_bin" && ok "Removed $llama_swap_bin"
+                ;;
+            *)
+                warn "Cannot auto-remove $llama_swap_bin — remove it manually"
+                ;;
+        esac
     else
         ok "Kept llama-swap"
     fi
 fi
 
-# ── Optional: uninstall llama.cpp ────────────────────────────────────────────
-if command -v llama-server &>/dev/null; then
+# ── Optional: uninstall llama-server (llama.cpp) ─────────────────────────────
+if [[ "$LLAMA_SERVER_METHOD" == "system" && -z "$FORCE_MODE" ]]; then
+    info "llama-server was pre-installed — skipping."
+elif command -v llama-server &>/dev/null; then
     llama_server_bin=$(command -v llama-server)
     if ask "Uninstall llama.cpp / llama-server ($llama_server_bin)?"; then
-        if command -v brew &>/dev/null && brew list llama.cpp &>/dev/null 2>&1; then
-            brew uninstall llama.cpp \
-                && ok "Uninstalled llama.cpp via Homebrew" \
-                || warn "Homebrew uninstall failed — remove $llama_server_bin manually"
-        elif [[ "$llama_server_bin" == "${HOME}/.local/bin/"* ]]; then
-            rm -f "$llama_server_bin" && ok "Removed $llama_server_bin"
-        else
-            warn "Cannot auto-remove $llama_server_bin — remove it manually"
+        method="$LLAMA_SERVER_METHOD"
+        # Fallback: detect from binary location if state is unknown
+        if [[ -z "$method" || "$method" == "system" ]]; then
+            if command -v brew &>/dev/null && brew list llama.cpp &>/dev/null 2>&1; then
+                method="brew"
+            elif [[ "$llama_server_bin" == "${HOME}/.local/bin/"* ]]; then
+                method="git"
+            fi
         fi
+        case "$method" in
+            brew)
+                brew uninstall llama.cpp \
+                    && ok "Uninstalled llama.cpp via Homebrew" \
+                    || warn "Homebrew uninstall failed — remove $llama_server_bin manually"
+                ;;
+            git)
+                rm -f "$llama_server_bin" && ok "Removed $llama_server_bin"
+                ;;
+            *)
+                warn "Cannot auto-remove $llama_server_bin — remove it manually"
+                ;;
+        esac
     else
         ok "Kept llama-server"
+    fi
+fi
+
+# ── Optional: uninstall jq ───────────────────────────────────────────────────
+if [[ "$JQ_METHOD" == "system" && -z "$FORCE_MODE" ]]; then
+    info "jq was pre-installed — skipping."
+elif command -v jq &>/dev/null && [[ "$JQ_METHOD" == "brew" || "$JQ_METHOD" == "apt" || -n "$FORCE_MODE" ]]; then
+    jq_bin=$(command -v jq)
+    if ask "Uninstall jq ($jq_bin)?"; then
+        case "$JQ_METHOD" in
+            brew)
+                brew uninstall jq \
+                    && ok "Uninstalled jq via Homebrew" \
+                    || warn "Homebrew uninstall failed — remove $jq_bin manually"
+                ;;
+            apt)
+                sudo apt-get remove -y jq \
+                    && ok "Uninstalled jq via apt" \
+                    || warn "apt remove failed — remove $jq_bin manually"
+                ;;
+        esac
+    else
+        ok "Kept jq"
     fi
 fi
 
